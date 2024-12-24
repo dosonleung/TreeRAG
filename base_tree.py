@@ -267,6 +267,22 @@ class DecisionTreeClassifier(BaseEstimator):
             return True,{'is_leave':True, 'output_prob':output_prob, 'output_label':output_label, 'value':global_value,
                 'n_sample':len(X), 'impurity':current_gain, 'threshold':-2}
         
+    # Return the id of the leaf that each sample is predicted as.
+    # [n_sample] #id
+    def apply(self, X):
+        return [_apply_instance(x) for x in X]
+
+    def _apply_instance(self, x): #return the id
+        current_node = self.root
+        while(not current_node.content['is_leave']):
+            feature_ = self.content['feature']
+            threshold_ = self.content['threshold']
+            if x[feature_] < threshold_:
+                current_node = current_node.left_child
+            else:
+                current_node = current_node.right_child
+        return current_node.tag
+
     # 获取深度
     def get_depth(self, node):
         if node is None:
