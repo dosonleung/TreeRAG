@@ -87,12 +87,18 @@ class Node:
                  left_child=None,
                  right_child=None,
                  parent=None,
+                 position='left',
+                 explanation=None,
+                 selection=None,
                  content={}
-                ):
+            ):
         self.tag = str(uuid.uuid4()) #唯一的标记
         self.left_child = left_child
         self.right_child = right_child
         self.parent = parent
+        self.position = position #only 'left' or 'right'
+        self.explanation = explanation #only for llmbt
+        self.selection = selection #only for llmbt
         self.content = {}
         self.content['is_leave'] = False
         self.content['feature'] = -2 #Feature used for splitting the node
@@ -101,8 +107,6 @@ class Node:
         self.content['n_sample'] = 0 #number of support sample
         self.content['value'] = [] #value for np.mean(Y, axis=0)
         self.content['output_label'] = [] #np.argmax(output_prob)
-        self.content['explanation'] = ''
-        self.content['selection'] = ''
         if content:
             for k in content:
                 self.content[k] = content[k]
@@ -154,27 +158,6 @@ class LLMBoostingClassifier(BaseEstimator):
         else:
             #print('tree build without multiproccessor. ')
             self.multiproccessor = None
-    
-    # 建树的过程
-    # 以递归方式构造树
-    # 每个递归计算一次熵降，然后再进入分支继续进行递归
-    # 结束条件：1.数据耗尽 2.熵不再下降
-    # def _build_dfs(self, X, y, current_depth=-1, premise=None):
-    #     if len(X)==0 : return None
-    #     reach_max_depth = False
-    #     if current_depth >= self.max_depth and current_depth > 0 and self.max_depth > 0:
-    #         reach_max_depth = True
-    #     is_leave,res = self._split(X, y, min_impurity_decrease=self.min_impurity_decrease, 
-    #                                min_samples_split=self.min_samples_split, is_leave=reach_max_depth)
-    #     if is_leave: #基尼系数为0或者所有特征收益相近，表示没有显著的区分特征或者已经完全划分
-    #         return Node(content=res)
-    #     else:
-    #         c,data1,data2 = res[0],res[1],res[2]
-    #         if data1 is not None:
-    #             left_child = self._build_dfs(data1[0], data1[1], current_depth+1)
-    #         if data2 is not None:
-    #             right_child = self._build_dfs(data2[0], data2[1], current_depth+1)
-    #         return Node(left_child=left_child, right_child=right_child, content=c)
 
     # 建树的过程
     # 以BFS方式构造树
@@ -184,26 +167,33 @@ class LLMBoostingClassifier(BaseEstimator):
         q = queue.Queue()
         root = Node()
         q.put((root, X, y, 1))
+        node_index,last_depth = 0,0
         while(not q.empty()):
             (node, x_, y_, current_depth) = q.get()
             node.tree = self
             reach_max_depth = False
             if current_depth >= self.max_depth and current_depth > 0 and self.max_depth > 0:
                 reach_max_depth = True
-            premise = node.parent.content['explanation'] if node.parent else None
-            is_leave,res = self._split(x_, y_, min_impurity_decrease=self.min_impurity_decrease, 
+            if current_depth != last_depth:
+                node_index = 0
+                last_depth = current_depth
+            premise = node.parent.explanation if node.parent else None                
+            print('================== depth: ' + str(current_depth-1) + ' index: ' + str(node_index) + ' ==================')
+            node_index += 1
+            is_leave,res,explanation,selection = self._split(x_, y_, min_impurity_decrease=self.min_impurity_decrease, 
                 min_samples_split=self.min_samples_split, is_leave=reach_max_depth, premise=premise)
+
+            #explanation is tuple
             if is_leave:
-                node.content = {**node.content, **res}
+                node.content = {**node.content, **res} #node has been assign
             else:
                 c,data1,data2 = res[0],res[1],res[2]
                 node.content = c
-                if data1 is not None: 
-                    node.left_child = Node(parent=node)
-                    q.put((node.left_child, data1[0], data1[1], current_depth+1))
-                if data2 is not None:
-                    node.right_child = Node(parent=node)
-                    q.put((node.right_child, data2[0], data2[1], current_depth+1))
+                node.selection = selection #selection only for non-leaf
+                node.left_child = Node(parent=node, position='left', explanation=explanation[0]) #explanation to children
+                node.right_child = Node(parent=node, position='right', explanation=explanation[-1]) #explanation to children
+                q.put((node.left_child, data1[0], data1[1], current_depth+1))
+                q.put((node.right_child, data2[0], data2[1], current_depth+1))
         return root
     
     # 以熵降的过程计算分裂点
@@ -215,6 +205,14 @@ class LLMBoostingClassifier(BaseEstimator):
     # 输出2：True, 节点内容
     def _split(self, X, Y, min_impurity_decrease=0.0, min_samples_split=2, is_leave=False, premise=None):
         if len(X)==0 : return True,None
+
+        global_value = np.mean(Y, axis=0)
+        output_prob = np.mean(Y, axis=0).tolist()
+        output_label = np.argmax(output_prob)
+        if len(X) < min_samples_split:
+            return True,{'is_leave':True, 'output_prob':output_prob, 'output_label':output_label, 'value':global_value,
+                'n_sample':len(X), 'impurity':0, 'threshold':-2},None,None
+
         candidate_feature,candidate_theshold,candidate_gain,candidate_indice,cache_table,current_gain =\
             criterion(X, Y, method=self.criterion, split_with_softmax=self.split_with_softmax, \
             need_original_gain=True, mult_processor=None) #mult_processor is unavailable in gini
@@ -225,7 +223,7 @@ class LLMBoostingClassifier(BaseEstimator):
         
         best_feature, best_theshold, best_gain, best_split = \
             candidate_feature[0],candidate_theshold[0],candidate_gain[0],candidate_indice[0]#全局四元组
-        expanation_,selection_ = '',''
+        expanation_,selection_ = (),''
         
         if not is_leave: #是否为叶子结点
             if self.splitter == 'best':
@@ -252,45 +250,40 @@ class LLMBoostingClassifier(BaseEstimator):
                 best_feature,best_theshold,best_gain,best_split = splits[0],splits[1],splits[2],splits[3]
                 expanation_,selection_ = explanation,selection
 
-        global_value = np.mean(Y, axis=0)
-        output_prob = np.mean(Y, axis=0).tolist()
-        output_label = np.argmax(output_prob)
-
         #global gain is not ok
         condition1 = best_gain >= min_impurity_decrease and best_gain != sys.float_info.max 
         #exist invalidate candidate gain
         condition2 = not (all(gain <= 0.0 for gain in candidate_gain) or all(gain == sys.float_info.max for gain in candidate_gain)) 
-        #number of sample is not reach
-        condition3 = min(len(best_split[0]), len(best_split[1])) >= min_samples_split
+        #exist number of sample of nodes are large than min_samples_split should be considered as node
+        condition3 = len(best_split[0]) >= min_samples_split or len(best_split[1]) >= min_samples_split
         #other condition e.g. max depth
         condition4 = is_leave == False
 
         if condition1 and condition2 and condition3 and condition4: #become a node
             content={'is_leave':False, 'feature':best_feature, 'threshold':best_theshold, 'impurity':current_gain, 'value':global_value,
-                    'n_sample':len(best_split[0])+len(best_split[1]), 'output_prob':output_prob, 'output_label':output_label,
-                    'explanation':expanation_, 'selection':selection_}
-            if len(best_split[0]) > 0 and len(best_split[1]) > 0:
-                content['left_prob'] = np.sum(Y[best_split[0]], axis=0)/np.sum(Y[best_split[0]])
-                content['right_prob'] = np.sum(Y[best_split[1]], axis=0)/np.sum(Y[best_split[1]])
-                return False,(content, 
+                    'n_sample':len(best_split[0])+len(best_split[1]), 'output_prob':output_prob, 'output_label':output_label}
+            return False, \
+                (
+                    content, 
                     (X[best_split[0]], Y[best_split[0]]), #data split
-                    (X[best_split[1]], Y[best_split[1]]))
-            elif len(best_split[0]) > 0: #只存在左节点
-                content['left_prob'] = np.sum(Y[best_split[0]], axis=0)/np.sum(Y[best_split[0]])
-                return False,(content, (X[best_split[0]], Y[best_split[0]]), None)
-            elif len(best_split[1]) > 0: #只存在右节点
-                content['right_prob'] = np.sum(Y[best_split[1]], axis=0)/np.sum(Y[best_split[1]])
-                return False,(content, None, (X[best_split[1]], Y[best_split[1]]))
+                    (X[best_split[1]], Y[best_split[1]])
+                ), \
+                expanation_, \
+                selection_
         else: #基尼系数为0或者所有特征收益相近，表示没有显著的区分特征或者已经完全划分；
             return True,{'is_leave':True, 'output_prob':output_prob, 'output_label':output_label, 'value':global_value,
-                'n_sample':len(X), 'impurity':current_gain, 'threshold':-2, 'explanation':expanation_, 'selection':selection_}
+                'n_sample':len(X), 'impurity':current_gain, 'threshold':-2}, expanation_, selection_
         
     # 获取深度
-    def get_depth(self, node):
+    def get_depth(self):
+        return max(self._get_depth(self.root.left_child), self._get_depth(self.root.right_child))+1
+    
+    # 获取深度
+    def _get_depth(self, node=None):
         if node is None:
             return 0
         else:
-            return max(self.get_depth(node.left_child), self.get_depth(node.right_child))+1
+            return max(self._get_depth(node.left_child), self._get_depth(node.right_child))+1
     
     # 根据BFS获取所有节点
     def _get_nodes(self, root=None):
@@ -309,10 +302,10 @@ class LLMBoostingClassifier(BaseEstimator):
         return nodes
 
     # 根据给定的节点node获取对应的子节点
-    def _get_leave(self, root):
+    def _get_leave(self, node=None):
         leave = []
         q = queue.Queue() #采用bfs
-        q.put(root)
+        q.put((self.root if node is None else node))
         while(not q.empty()):
             node = q.get()
             if node.left_child is None and node.right_child is None:
@@ -375,6 +368,37 @@ class LLMBoostingClassifier(BaseEstimator):
         else:
             paths.append(node)
             return True
+
+    # Return the id of the leaf that each sample is predicted as.
+    # [n_sample] #id
+    def apply(self, X):
+        return [self._apply_instance(x) for x in X]
+
+    def _apply_instance(self, x): #return the id
+        current_node = self.root
+        while(not current_node.content['is_leave']):
+            feature_ = current_node.content['feature']
+            threshold_ = current_node.content['threshold']
+            if x[feature_] < threshold_:
+                current_node = current_node.left_child
+            else:
+                current_node = current_node.right_child
+        return current_node.tag
+    
+    #change a leaf node to branch node
+    def leaf2branch(self, leaf, feature, threshold, left_child, right_child, selection, explanation, n_sample=None):
+        leaf.content['is_leave'] = False
+        leaf.content['feature'] = feature
+        leaf.content['threshold'] = threshold
+        leaf.content['impurity'] = -1 #unknown
+        leaf.content['value'] = -1 #unknown
+        leaf.content['output_label'] = -1 #unknown
+        leaf.content['n_sample'] = n_sample
+        leaf.selection = selection
+        leaf.explanation = explanation
+        leaf.left_child = left_child
+        leaf.right_child = right_child
+        return leaf
     
     #预测函数，根绝给定的x预测，从node开始递归
     def _classify(self, x, node):

@@ -40,7 +40,10 @@ def remove_unique_columns(table, exclude_columns=[]):
     print('remove_unique_columns ...')
     vaild_cols = []
     for col in table.columns:
-        if len(table[col].unique()) > 1 and len(table[col].unique()) < len(table) and not col in exclude_columns:
+        if col in exclude_columns:
+            vaild_cols.append(col)
+            continue
+        if len(table[col].unique()) > 1 and len(table[col].unique()) < len(table):
             vaild_cols.append(col)
     # Return a DataFrame with only non-unique columns
     return table[vaild_cols]
@@ -70,7 +73,7 @@ def fill_string_nan_with_none(table, exclude_columns=[]):
             table[column] = table[column].fillna('None')
     return table
 
-def onehot_table(table, prefix_sep='_is_', exclude_columns=[]):
+def onehot_table(table, prefix_sep='=', suffix_sep='?', exclude_columns=[]):
     # Identify string-type columns
     print('onehot_table ...')
     string_cols = table.select_dtypes(include=['object']).columns
@@ -83,6 +86,9 @@ def onehot_table(table, prefix_sep='_is_', exclude_columns=[]):
     # Create one-hot encoded DataFrame for string columns
     one_hot_encoded_df = pd.get_dummies(table[string_cols_], drop_first=False, prefix_sep=prefix_sep)
     # Concatenate the one-hot encoded columns with the original DataFrame (excluding original string columns)
+    one_hot_encoded_df.columns = [col+suffix_sep for col in one_hot_encoded_df.columns]
+    for col in one_hot_encoded_df.columns:
+        one_hot_encoded_df[col] = one_hot_encoded_df[col] .apply(lambda x: int(x)) #force boolean to int
     df_encode = pd.concat([table.drop(columns=string_cols_), one_hot_encoded_df], axis=1)
     return df_encode
 

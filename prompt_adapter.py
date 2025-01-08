@@ -1,28 +1,53 @@
 import re
+import numpy as np
 from typing import Tuple, Set, Optional, List, Dict, Union
 
+def possibility2word(poss:float) -> str:
+    #print('**************** ' + str(poss) + ' ****************')
+    assert poss >= 0.0 and poss <= 1.0
+    if poss > 0.95: #0.95-1.0
+        return 'extremely high'
+    elif poss > 0.9: #0.9-0.95
+        return 'very high'
+    elif poss > 0.8: #0.8-0.9
+        return 'high'
+    elif poss > 0.6: #0.6-0.8
+        return 'fair high'
+    elif poss > 0.4: #0.4-0.6
+        return 'indeterminate'
+    elif poss > 0.2: #0.2-0.4
+        return 'fair low'
+    elif poss > 0.1: #0.1-0.2
+        return 'low'
+    elif poss > 0.05: #0.05-0.1
+        return 'very low'
+    else: #0.0 - 0.05
+        return 'extremely low'
+        
 #possibility
 #result
-def _get_condition(possibility:float, result:str) -> str:
-    if possibility < 1.0:
-        return str(possibility*100) + '% chance to be ' + result
+def _get_condition(possibility:float, result:str, multi_class=False) -> str:
+    adverb = None
+    if multi_class:
+        return 'are most likely to be ' + result
     else:
-        return str(possibility) + '% chance to be ' + result
+        adverb = possibility2word(possibility)
+        return 'have a ' + adverb + ' chance (' + str(np.round(possibility * 100.0, 3)) + '%) to be ' + result
 '''
 Category: Estrogen Status, category of [False, True], if it is False, why these instances have 97% possibility to be dead ?
 Continuous: Non-industry income and expenditure/revenue, which is range from 0.0 to 1.0, if  this feature of X is < 0.3, why X have a 95% chance to be bankrupt?
 for category example:
-feature='Estrogen Status', val_range = tuple/list for continous/category, det='<','=','>', val='False', why X have a condition='90% possibility to be bankrupt' + '?'
+feature='Estrogen Status', val_range = tuple/list for continous/category, det='<','=','>', val='False', why X have an 90% chance to be bankrupt' + '?'
 (possibility, result) for condition
 '''
 def _get_query(feature, val_range, val, det=None, condition=None) -> str:
     query = ''
     if det is not None and condition is not None:
-        possibility, result = condition['possibility'], condition['result']
+        possibility, result, multiclass = condition['possibility'], condition['result'], condition['multiclass']
         if type(val_range) is tuple:
-            query = feature + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', if this feature of X is ' + str(det) + ' ' + str(val) + ', why X have a ' + str(_get_condition(possibility, result)) + '? '
+            query = feature + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', if this feature of X is ' + str(det) + ' ' + str(val) + ', why X ' + str(_get_condition(possibility, result, multiclass)) + '? '
         else:
-            query = feature + ', category of ' + str(val_range) + ', if this feature of X is ' + str(val) + ', why X have a ' + str(_get_condition(possibility, result)) + '? '
+            query = feature + ', category of ' + str(val_range) + ', if this feature of X is ' + str(val) + ', why X ' + str(_get_condition(possibility, result, multiclass)) + '? '
     else:
         if type(val_range) is tuple:
             query = 'why the feature ' + feature + ' and value ' + str(val) + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', is the best for further classification.'
@@ -48,19 +73,19 @@ that requires a high density or high refractive index, such as certain types of 
 Returns:
     string: prompt text
 """
-def get_explanation_prompt(desc:str, role:str, query:str, premise=None) -> str:
+def get_explanation_prompt(desc:str, role:str, query:Dict, premise=None) -> str:
     prompt = ''
     query_ = _get_query(
         feature=query['feature'],
         val_range=query['val_range'],
-        det=query['det'],
+        det=query.get('det'),
         val=query['val'],
-        condition=query['condition']
+        condition=query.get('condition')
     )
     if premise:
-        prompt = 'Question: ' + desc + ' Given a group of instances X satisfy that:' + premise + ' Assume you are a ' + role + ', please explain that \n' + query_ + '\nYour explanation: #Please give a brief answer in one paragraph shorter\n'
+        prompt = 'Question: ' + desc + ' Given a group of instances X satisfy that: ' + premise + ' Assume you are a ' + role + ', please explain: ' + query_ + '\nYour explanation: #Please give a brief answer in one paragraph shorter. You should consider the detail in the Question, the semantic info of feature and most important - your knowledge for makding explanation.\n'
     else:
-        prompt = 'Question: ' + desc + ' Assume you are a ' + role + 'given a group of instances X, please explain that \n' + query_ + '\nYour explanation: #Please give a brief answer in one paragraph shorter \n'
+        prompt = 'Question: ' + desc + ' Assume you are a ' + role + 'given a group of instances X, please explain that: ' + query_ + '\nYour explanation: #Please give a brief answer in one paragraph shorter. You should consider the detail in the Question, the semantic info of feature and most important - your knowledge for makding explanation.\n'
     return prompt
 
 #format like:
@@ -84,17 +109,17 @@ Your explanation:
 Iris Setosa is typically distinguished by its smaller petal width, usually less than 0.8 cm, compared to Iris Versicolor and Iris Virginica. This characteristic likely results from evolutionary adaptations to specific ecological niches or pollination strategies. As such, a petal width below 0.8 cm is a strong indicator of Iris Setosa, aiding botanists in species classification.
 
 
-Question: This dataset of breast cancer patients was obtained from the 2017 November update of the SEER Program of the NCI, which provides information on population-based cancer statistics. The dataset involved female patients with infiltrating duct and lobular carcinoma breast cancer (SEER primary cites recode NOS histology codes 8522/3) diagnosed in 2006-2010. Patients with unknown tumour size, examined regional LNs, positive regional LNs, and patients whose survival months were less than 1 month were excluded; thus, 4024 patients were ultimately included. Given a group of instances X satisfy that: Survival Months (range from 1 to 107) is a statistical feature that means how long a patient has survived since being diagnosed. For early-stage breast cancer, where the cancer is localized and has not spread beyond the breast or nearby lymph nodes, the 5-year survival rate is relatively high. Therefore, instances of Survival Months <= 47.5 are likely to be benign. Assume you are an expert of Breast surgeons, please explain that Estrogen Status, category of [False, True], if this feature of X is False, why X have a 97% chance to be dead ?
+Question: This dataset of breast cancer patients was obtained from the 2017 November update of the SEER Program of the NCI, which provides information on population-based cancer statistics. The dataset involved female patients with infiltrating duct and lobular carcinoma breast cancer (SEER primary cites recode NOS histology codes 8522/3) diagnosed in 2006-2010. Patients with unknown tumour size, examined regional LNs, positive regional LNs, and patients whose survival months were less than 1 month were excluded; thus, 4024 patients were ultimately included. Given a group of instances X satisfy that: Survival Months (range from 1 to 107) is a statistical feature that means how long a patient has survived since being diagnosed. For early-stage breast cancer, where the cancer is localized and has not spread beyond the breast or nearby lymph nodes, the 5-year survival rate is relatively high. Therefore, instances of Survival Months <= 47.5 are likely to be benign. Assume you are an expert of Breast surgeons, please explain that Estrogen Status, category of [False, True], if this feature of X is False, why X have a extremely high chance to be dead ?
 Your explanation:
-Estrogen Receptor-negative (ER-negative) tumors, indicated by "False" estrogen status, do not have receptors for estrogen and therefore do not respond to hormonal therapies like tamoxifen or aromatase inhibitors. These therapies are effective in treating estrogen receptor-positive (ER-positive) tumors, which can grow in response to estrogen and often have better survival outcomes due to the efficacy of these treatments. ER-negative breast cancers, however, are more challenging to treat because they require alternative therapeutic strategies such as chemotherapy, which may not be as effective. Consequently, ER-negative tumors tend to be more aggressive and are often associated with poorer prognoses and higher mortality rates. In the given dataset, where survival months range from 1 to 107 and instances with survival months ≤ 47.5 are considered likely to be less aggressive, the strong correlation between ER-negative status and a 97% chance of mortality underscores the aggressive nature and treatment challenges of ER-negative breast cancer, resulting in poorer survival outcomes.
+Estrogen Receptor-negative (ER-negative) tumors, indicated by "False" estrogen status, do not have receptors for estrogen and therefore do not respond to hormonal therapies like tamoxifen or aromatase inhibitors. These therapies are effective in treating estrogen receptor-positive (ER-positive) tumors, which can grow in response to estrogen and often have better survival outcomes due to the efficacy of these treatments. ER-negative breast cancers, however, are more challenging to treat because they require alternative therapeutic strategies such as chemotherapy, which may not be as effective. Consequently, ER-negative tumors tend to be more aggressive and are often associated with poorer prognoses and higher mortality rates. In the given dataset, where survival months range from 1 to 107 and instances with survival months ≤ 47.5 are considered likely to be less aggressive, the strong correlation between ER-negative status and a very high chance of mortality underscores the aggressive nature and treatment challenges of ER-negative breast cancer, resulting in poorer survival outcomes.
 
 
-Question: Company Bankruptcy Prediction dataset were built from the Taiwan Economic Jouranl for the years 1999 to 2009. Company bankruptcy was defined based on the business regulations of the Taiwan Stock Exchange. Given a group of instances X satisfy that: The low EPS-Net Income indicates weak profitability, while the low Quick Ratio suggests serious liquidity problems. Together, these factors could point to a higher risk of financial distress or bankruptcy. Assume you are a economist, please explain that Non-industry income and expenditure/revenue: Net Non-operating Income Ratio, which is range from 0.0 to 1.0, if this feature of X < 0.3, why X have a 95% chance to be bankrupt?
+Question: Company Bankruptcy Prediction dataset were built from the Taiwan Economic Jouranl for the years 1999 to 2009. Company bankruptcy was defined based on the business regulations of the Taiwan Stock Exchange. Given a group of instances X satisfy that: The low EPS-Net Income indicates weak profitability, while the low Quick Ratio suggests serious liquidity problems. Together, these factors could point to a higher risk of financial distress or bankruptcy. Assume you are a economist, please explain that Non-industry income and expenditure/revenue: Net Non-operating Income Ratio, which is range from 0.0 to 1.0, if this feature of X < 0.3, why X have a  extremely high chance to be bankrupt?
 Your explanation:
 A Net Non-operating Income Ratio of less than 0.3 indicates a high probability of bankruptcy because it suggests the company heavily depends on its core operations for revenue without significant contributions from non-operating activities. This lack of diversification means the company doesn't have a financial buffer to rely on during times of operational distress, which is exacerbated when combined with low EPS and a low Quick Ratio, indicating weak profitability and serious liquidity issues. Without substantial non-operating income to support cash flow and meet liabilities, the company is at a heightened risk of insolvency, especially when historical data shows that such financial profiles frequently lead to bankruptcy.
 
 
-Question: This is a Glass Identification Data Set from UCI. It contains 10 attributes with unit measurement expect RI that weight percent in corresponding oxide. The response is glass type containing building_windows_float_processed, building_windows_non_float_processed, vehicle_windows_float_processed, containers, tableware and headlamps. Given a group of instances X satisfy that: Ba < 0.335, which indicates that the glass has a low barium content, suggesting it is less likely to be a type of glass that requires a high density or high refractive index, such as certain types of optical glass, and Mg > 2.78, which suggests that the glass may be designed for improved chemical durability and resistance to weathering. Magnesium is not typically present in high amounts in standard soda-lime glass, which is commonly used in windows. Those glass of above attributes are likely to be non-float processed. Assume you are a chemist, please explain that Al Aluminum, range from 0.29 to 3.5, if this feature of X is > 1.42, why X have a 70% chance to be building_windows_non_float_processed ?
+Question: This is a Glass Identification Data Set from UCI. It contains 10 attributes with unit measurement expect RI that weight percent in corresponding oxide. The response is glass type containing building_windows_float_processed, building_windows_non_float_processed, vehicle_windows_float_processed, containers, tableware and headlamps. Given a group of instances X satisfy that: Ba < 0.335, which indicates that the glass has a low barium content, suggesting it is less likely to be a type of glass that requires a high density or high refractive index, such as certain types of optical glass, and Mg > 2.78, which suggests that the glass may be designed for improved chemical durability and resistance to weathering. Magnesium is not typically present in high amounts in standard soda-lime glass, which is commonly used in windows. Those glass of above attributes are likely to be non-float processed. Assume you are a chemist, please explain that Al Aluminum, range from 0.29 to 3.5, if this feature of X is > 1.42, why X have a chance to be building_windows_non_float_processed ?
 Your explanation:
 In Glass Identification, instances with low barium content (Ba < 0.335) and high magnesium content (Mg > 2.78) suggest glass that does not require high density or refractive index, and instead is designed for improved chemical durability and resistance to weathering. These characteristics are less typical of standard soda-lime glass used in windows, indicating a likelihood of being non-float processed. When the aluminum content (Al) is greater than 1.42, there's a 70% probability that the glass is used for building windows that are non-float processed. This is because higher aluminum content enhances chemical durability, thermal stability, and resistance to weathering—properties essential for building materials exposed to environmental elements. Non-float processed glass might require such compositions due to different manufacturing techniques that do not use molten metal beds, thereby necessitating a formulation with higher aluminum for achieving desired durability and stability.
 
@@ -150,14 +175,14 @@ option={
 '''
 def _get_option(feature, val_range, val, det=None, condition=None) -> str:
     opt = ''
-    if det is not None and condition is not None:
+    if det is not None and condition is not None: #with detail
         possibility, result = condition['possibility'], condition['result']
-        if type(val_range) is tuple:
-            opt = feature + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', if this feature of X is ' + str(det) + ' ' + str(val) + ', X have a ' + str(_get_condition(possibility, result)) + '.'
+        if type(val_range) is tuple: #is number
+            opt = feature + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', if this feature of X is ' + str(det) + ' ' + str(val) + ', X ' + str(_get_condition(possibility, result)) + '.'
         else:
-            opt = feature + ', category of ' + str(val_range) + ', if this feature of X is ' + str(val) + ', X have a ' + str(_get_condition(possibility, result)) + '.'
+            opt = feature + ', category of ' + str(val_range) + ', if this feature of X is ' + str(val) + ', X ' + str(_get_condition(possibility, result)) + '.'
     else:
-        if type(val_range) is tuple:
+        if type(val_range) is tuple: #is number
             opt = feature + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', X can be classified by considering whether it less or greater than ' + str(val) + '.'
         else:
             opt = feature + ', category of ' + str(val_range) + ', X can be classified by considering which category they are of.'
@@ -206,7 +231,7 @@ Returns:
 def get_selection_prompt(desc, role, options, premise=None) -> str:
     prompt = ''
     if premise:
-        prompt = 'Question: ' + desc + ' Given a group of instances X satisfy that:' + premise + ' Assume you are a ' + role + ', which options is the best for further classification of X?\n' \
+        prompt = 'Question: ' + desc + ' Given a group of instances X satisfy that: ' + premise + ' Assume you are a ' + role + ', which options is the best for further classification of X?\n' \
             + options + '\nYour choice:\n'
     else:
         prompt = 'Question: ' + desc + ' Assume you are a ' + role + 'given a group of instances X, which options is the best for further classification?\n' \
@@ -355,6 +380,20 @@ def categories2text(cats:List, selection_keys:List) -> Tuple[Dict, str]:
             selection_text += key + '. ' + op
     return selection,selection_text
 
+'''
+Category: Estrogen Status, category of [False, True], if it is False, why these instances have 97% possibility to be dead ?
+Continuous: Non-industry income and expenditure/revenue, which is range from 0.0 to 1.0, if  this feature of X is < 0.3, which class are X most likely to be?
+for category example:
+feature='Estrogen Status', val_range = tuple/list for continous/category, det='<','=','>', val='False', why X have an 90% chance to be bankrupt' + '?'
+'''
+def _get_prediction(feature, val_range, val, det=None) -> str:
+    question = ''
+    if det is not None: #is number
+        question = feature + ', range from ' + str(val_range[0]) + ' to ' + str(val_range[-1]) + ', if this feature of X is ' + str(det) + ' ' + str(val) + ', which class are X most likely to be?'
+    else:
+        question = feature + ', category of ' + str(val_range) + ', if this feature of X is ' + str(val) + ', which class are X most likely to be?'
+    return question
+
 
 """
 This function return the predition for node splitting
@@ -365,15 +404,17 @@ role='doctor'
 category='A. positive', B. negative'
 premise='Ba < 0.335, which indicates that the glass has a low barium content, suggesting it is less likely to be a type of glass \
 that requires a high density or high refractive index, such as certain types of optical glass, and ...'
+condition: {'feature':, 'val_range': , 'val':, 'det': Nonable}
 Returns:
     string: prompt text
 """
-def get_predition_prompt(desc:str, role:str, category:str, premise:str) -> str:
+def get_predition_prompt(desc:str, role:str, category:str, premise:str, condition:Dict) -> str:
     prompt = ''
+    question = _get_prediction(**condition)
     if premise:
-        prompt = 'Question: ' + desc + ' Given a group of instances X satisfy that:' + premise + ' Assume you are a ' + role + ', which class are X most likely to be?\n' + category + '\nYour selection:\n'
+        prompt = 'Question: ' + desc + ' Given a group of instances X satisfy that: ' + premise + ' Assume you are a ' + role + ', please answer that ' + question + '\n' + category + '\nYour selection:\n'
     else:
-        prompt = 'Question: ' + desc + ' Assume you are a ' + role + ', given a group of instances X, which class are X most likely to be?\n' + category + '\nYour selection:\n'
+        prompt = 'Question: ' + desc + ' Assume you are a ' + role + ' and given a group of instances X, please answer that ' + question + '\n' + category + '\nYour selection:\n'
     return prompt
 
 #format like:
